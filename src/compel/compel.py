@@ -7,7 +7,8 @@ from transformers import CLIPTokenizer, CLIPTextModel
 
 from . import cross_attention_control
 from .conditioning_scheduler import ConditioningScheduler, StaticConditioningScheduler
-from .embeddings_provider import EmbeddingsProvider, BaseTextualInversionManager, DownweightMode, ReturnedEmbeddingsType, EmbeddingsProviderMulti
+from .embeddings_provider import EmbeddingsProvider, BaseTextualInversionManager, DownweightMode, \
+    ReturnedEmbeddingsType, EmbeddingsProviderMulti, SplitLongTextMode
 from .prompt_parser import Blend, FlattenedPrompt, PromptParser, CrossAttentionControlSubstitute, Conjunction
 
 __all__ = ["Compel", "DownweightMode"]
@@ -30,7 +31,8 @@ class Compel:
                  downweight_mode: DownweightMode = DownweightMode.MASK,
                  returned_embeddings_type: ReturnedEmbeddingsType = ReturnedEmbeddingsType.LAST_HIDDEN_STATES_NORMALIZED,
                  requires_pooled: Union[bool, List[bool]] = False,
-                 device: Optional[str] = None
+                 split_long_text_mode: SplitLongTextMode = SplitLongTextMode.SENTENCES,
+                 device: Optional[str] = None,
                  ):
         """
         Initialize Compel. The tokenizer and text_encoder can be lifted directly from any DiffusionPipeline. For SDXL,
@@ -70,7 +72,8 @@ class Compel:
                                                             padding_attention_mask_value = padding_attention_mask_value,
                                                             downweight_mode=downweight_mode,
                                                             returned_embeddings_type=returned_embeddings_type,
-                                                            requires_pooled_mask = requires_pooled
+                                                            requires_pooled_mask = requires_pooled,
+                                                            split_long_text_mode = split_long_text_mode
             )
         else:
             self.conditioning_provider = EmbeddingsProvider(tokenizer=tokenizer,
@@ -81,7 +84,8 @@ class Compel:
                                                             padding_attention_mask_value = padding_attention_mask_value,
                                                             downweight_mode=downweight_mode,
                                                             returned_embeddings_type=returned_embeddings_type,
-                                                            device=device
+                                                            device=device,
+                                                            split_long_text_mode=split_long_text_mode
                                                             )
         self._device = device
         self.requires_pooled = requires_pooled
@@ -230,10 +234,13 @@ class Compel:
         c0_shape = conditionings[0].shape
 
         if not all([c.shape[0] == c0_shape[0] and c.shape[2] == c0_shape[2] for c in conditionings]):
-            raise ValueError(f"All conditioning tensors must have the same batch size ({c0_shape[0]}) and number of embeddings per token ({c0_shape[1]}")
-        
+            raise ValueError(f"All conditioning tensors must have the same batch size ({c0_shape[0]}) and number of embeddings per token ({c0_shape[2]}")
+
         if len(emptystring_conditioning.shape) == 2:
             emptystring_conditioning = emptystring_conditioning.unsqueeze(0)
+        if not all([c.shape[1] % emptystring_conditioning.shape[1] == 0 for c in conditionings]):
+            raise ValueError(f"All conditioning tensors must have a token count that is a multiple of the emptystring conditioning token count {emptystring_conditioning.shape[1]}")
+
         empty_z = torch.cat([emptystring_conditioning] * c0_shape[0])
         max_token_count = max([c.shape[1] for c in conditionings])
         # if necessary, pad shorter tensors out with an emptystring tensor
